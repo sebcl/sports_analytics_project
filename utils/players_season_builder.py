@@ -10,6 +10,11 @@ BDB_GAME = ['DATASET', 'DATE', 'TEAMS','VENUE',
     'F', 'MIN', 'FG', 'FGA', '3P', '3PA', 'FT', 'FTA', 
     'OR', 'DR', 'TOT', 'A', 'PF', 'ST', 'TO', 'BL', 'PTS', 'POSS', 'PACE', 'OEFF', 'DEFF', 'REST DAYS']
 
+BDB_PLAYER = [
+    'DATASET',	'DATE', 'PLAYER FULL NAME',
+    'POSITION', 'OWN TEAM', 'OPP TEAM', 'VENUE',
+    'MIN', 'FG', 'FGA', '3P', '3PA', 'FT','FTA','OR','DR','TOT','A', 'PF', 'ST', 'TO', 'BL', 'PTS'
+]
 def combine_xl_data( folder_path : str, file_type : str, sheet_name, data_source : str) -> pd.DataFrame:
     """Take folder path and combine all excels/csv into a dataframe.
 
@@ -54,8 +59,32 @@ def combine_xl_data( folder_path : str, file_type : str, sheet_name, data_source
             except:
                 continue
 
+            # Venues - includes: Home, Road, H, R --> Take first character
+            temp_pd['VENUE'] = temp_pd['VENUE'].str[0] 
             temp_pd = temp_pd[BDB_GAME]
 
+        # Rename columns based on source
+        if (data_source == "BDB-PLAYER"):
+             # Rename columns based on columns + count
+            try:
+                temp_pd.rename(
+                    columns = {
+                         'BIGDATABALL\nDATASET': 'DATASET',
+                        'DATA SET': 'DATASET',
+                        'OWN \nTEAM': 'OWN TEAM',
+                        'PLAYER \nFULL NAME': 'PLAYER FULL NAME',
+                        'VENUE\n(R/H)':'VENUE',
+                        'VENUE (R/H)':'VENUE',
+                        'STARTER\n(Y/N)':'STARTER (Y/N)',
+                        'OPPONENT \nTEAM': 'OPP TEAM',
+                        'DAYS\nREST' : 'REST DAYS'
+                    }, inplace=True
+                )
+            except:
+                continue
+
+            temp_pd = temp_pd[BDB_PLAYER]
+        
         df_columns.append(temp_pd.columns)
         df.append(temp_pd)
 
@@ -82,6 +111,12 @@ def save_combined_df( df_to_save : pd.DataFrame, folder_path : str, file_name : 
 
         return False
 
+def df_groupby_statistics( df_groupby : pd.DataFrame, cols_group : list[str] ) -> pd.DataFrame:
+
+    return 
+
+
+
 if __name__ == "__main__":
     # Create intial Dataframe
     folder_path = r"\Users\sebas\Desktop\UChicago - Q6\Sports Analytics\sports_analytics_project\data\Big Data Ball - Game" 
@@ -94,3 +129,5 @@ if __name__ == "__main__":
         save_combined_df( combined_df, save_path, file_name="BDB-GAME.xlsx",)
         )
     # Clean Combined Dataframe
+
+
