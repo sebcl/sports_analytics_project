@@ -56,7 +56,6 @@ def multi_iv_base( data : pd.DataFrame, y, variable, instruments, x ):
     res_dict =  dict(se=se, ate=ate, results = iv )
     return res_dict
 
-
 if __name__ == "__main__":
     
     player_path = r"\Users\sebas\Desktop\UChicago - Q6\Sports Analytics\sports_analytics_project\data\BDB_Player.xlsx"
