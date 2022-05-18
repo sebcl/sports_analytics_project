@@ -1,0 +1,197 @@
+---
+title: "Untitled"
+author: "Sebastian Clavijo"
+output: 
+  pdf_document: 
+    latex_engine: lualatex
+---
+
+```{r Import, warning=FALSE, message=FALSE}
+
+setwd(dirname(rstudioapi::getSourceEditorContext()$path))
+# import libs
+library(tidyverse)
+library(readxl)
+library(stargazer)
+library(kableExtra)
+library(fastDummies)
+
+```
+
+```{r}
+df_combo <- read_excel("BDB_Combo.xlsx")
+df_player <- read_excel("BDB_Player.xlsx")
+```
+
+
+# Player OLS
+
+```{r}
+colnames(df_player) <- c('DATASET', 'DATE', 'PLAYER FULL NAME', 'POSITION', 'OWN TEAM',
+       'OPP TEAM', 'VENUE', 'MIN', 'FG', 'FGA', '3P', '3PA', 'FT', 'FTA', 'OR',
+       'DR', 'TOT', 'A', 'PF', 'ST', 'TO', 'BL', 'PTS', 'PER', 'DATE-DIFF',
+       'RR VAL', 'RR SERIES', 'S_PER', 'I_PER', 'SAME_CITY', 'TRAVEL',
+       '1_days', '10_days', '11_days', '12_days', '13_days',
+       '14+_days', '14_days', '2_days', '3_days', '4_days', '5_days',
+       '6_days', '7_days', '8_days', '9_days', 'Season_Start',
+       'H', 'R', 'H-M1', 'H-M2', 'H-M3', 'R-M1', 'R-M2', 'R-M3', 'M1', 'M2',
+       'M3', 'S_OEFF', 'S_DEFF', 'I_OEFF', 'I_DEFF','Bubble')
+
+```
+
+```{r}
+# Omit - Bubble
+df_player <- df_player %>% filter( DATASET != '2019-2020 Regular Season') %>% mutate(
+  PER_diff = PER - I_PER,
+  M1_sq = M1^2,
+  M1_cu = M1^3,
+  M2_sq = M2^2,
+  M2_cu = M2^3
+)
+  
+```
+
+## OLS - compare lockout
+
+```{r}
+
+lockout_lm = lm(
+  data = df_player, 
+  PER_diff ~ H+TRAVEL+I_OEFF+I_DEFF+M1+M2+M3+`1_days`+`2_days`+`3_days`+`4_days`
+  )
+
+without_lockout_lm <- df_player %>% filter(DATASET != '2011-2012 Regular Season') %>% lm( PER_diff ~ H+TRAVEL+I_OEFF+I_DEFF+M1+M2+M3+`1_days`+`2_days`+`3_days`+`4_days`, data = .
+)
+
+```
+
+```{r mylatextable, warning=FALSE, results="asis"}
+
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
+stargazer(lockout_lm, without_lockout_lm, type = 'latex', title = "Consider the 11-12 NBA Season")
+
+```
+
+## OLS - Weighting Minutes
+
+```{r min_lm}
+
+M1.cu.lm <- lm(
+  data = df_player, 
+  PER_diff ~ H+TRAVEL+I_OEFF+I_DEFF+M1_cu+M2+M3+`1_days`+`2_days`+`3_days`+`4_days`
+  )
+
+M1.sq.lm <- lm(
+  data = df_player, 
+  PER_diff ~ H+TRAVEL+I_OEFF+I_DEFF+M1_sq+M2+M3+`1_days`+`2_days`+`3_days`+`4_days`
+  )
+
+M1.M2.lm <- lm(
+  data = df_player, 
+  PER_diff ~ H+TRAVEL+I_OEFF+I_DEFF+M1_cu+M2_sq+M3+`1_days`+`2_days`+`3_days`+`4_days`
+  )
+
+M1.M2.2.lm <- lm(
+  data = df_player, 
+  PER_diff ~ H+TRAVEL+I_OEFF+I_DEFF+M1_cu+M2_cu+M3+`1_days`+`2_days`+`3_days`+`4_days`
+  )
+
+M1.M2.cv.lm  <-  lm(
+  data = df_player, 
+  PER_diff ~ H+TRAVEL+I_OEFF+I_DEFF+M1*`1_days`+M2*`2_days`+M3*`3_days`+`4_days`
+  )
+  
+```
+
+```{r table2, warning=FALSE, results="asis"}
+stargazer(M1.cu.lm, M1.sq.lm, type = 'latex', title = "Considering Polynomial OLS")
+```
+
+```{r table3, warning=FALSE, results="asis"}
+stargazer(M1.M2.lm, M1.M2.2.lm, type = 'latex', title = "Considering Polynomial OLS - p2")
+```
+
+
+```{r table4, warning=FALSE, results="asis"}
+stargazer(M1.M2.cv.lm, type = 'latex', title = "Considering Covariates ( Minutes x Game Played )")
+```
+
+# IV 
+
+```{r merge}
+df_combo <- df_combo %>% rename(
+    'OWN TEAM' = 'TEAMS',
+    'TEAM_OEFF' = 'OEFF',
+    'TEAM_DEFF' = 'DEFF',
+    'TEAM_REST_DAYS' = 'REST DAYS',
+    'TDF'= 'DATE-DIFF' 
+)
+
+df_combo <- df_combo %>% select(
+  c('DATASET', 'DATE', 'OWN TEAM', 'VENUE','TEAM_OEFF', 'TEAM_DEFF', 'TEAM_REST_DAYS', 'TDF')
+  )
+
+df_player <- df_player[, -which(
+  names(df_player) %in% c("FG","FGA","FT","3P","3PA","FTA","OR","DR","TOT","A","PF","ST","TO","BL","PTS")
+  )]
+
+df_final <- merge(df_combo, df_player, by = c("DATASET","DATE","OWN TEAM","VENUE"))
+
+df_final <- dummy_cols(df_final, select_columns = "TDF") 
+
+df_final <- df_final %>% rename(
+    'TDF_1' = 'TDF_1.0 days',
+    'TDF_2' = 'TDF_2.0 days',
+    'TDF_3' = 'TDF_3.0 days',
+    'TDF_4' = 'TDF_4.0 days' 
+)
+
+```
+
+\newpage
+
+## Model
+
+```{r}
+IV_model <- ivreg::ivreg(
+  data = df_final, 
+  PER_diff ~ H + TRAVEL + I_OEFF + I_DEFF + `1_days` + `2_days` + `3_days` + `4_days` + (M1 | ( `TDF_1` + `TDF_2` + `TDF_3` + `TDF_4` ) ) + ( M2 | ( `TDF_1` + `TDF_2` + `TDF_3` + `TDF_4` ) ) + ( M3 | ( `TDF_1` + `TDF_2` + `TDF_3` + `TDF_4` ) ))
+
+IV_model.2 <- ivreg::ivreg(
+  data = df_final, 
+  PER_diff ~ H + TRAVEL + I_OEFF + I_DEFF + `1_days` + `2_days` + `3_days` + `4_days` + (M1_sq | ( `TDF_1` + `TDF_2` + `TDF_3` + `TDF_4` ) ) + ( M2_sq | ( `TDF_1` + `TDF_2` + `TDF_3` + `TDF_4` ) ) + ( M3 | ( `TDF_1` + `TDF_2` + `TDF_3` + `TDF_4` ) ))
+
+IV_model.3 <- ivreg::ivreg(
+  data = df_final, 
+  PER_diff ~ H + TRAVEL + I_OEFF + I_DEFF + `1_days` + `2_days` + `3_days` + `4_days` + (M1_sq | ( `TDF_1` + `TDF_2` + `TDF_3` + `TDF_4` ) ) + ( M2 | ( `TDF_1` + `TDF_2` + `TDF_3` + `TDF_4` ) ) + ( M3 | ( `TDF_1` + `TDF_2` + `TDF_3` + `TDF_4` ) ))
+
+```
+
+```{r table5}
+
+summary(IV_model)
+summary(IV_model.2)
+summary(IV_model.3)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
