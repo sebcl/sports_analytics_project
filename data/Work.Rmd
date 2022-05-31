@@ -1,0 +1,188 @@
+---
+title: "Untitled"
+author: "Sebastian Clavijo"
+output: 
+  pdf_document: 
+    latex_engine: lualatex
+---
+
+```{r Import, message=FALSE, warning=FALSE, include=FALSE}
+
+setwd(dirname(rstudioapi::getSourceEditorContext()$path))
+# import libs
+library(tidyverse)
+library(readxl)
+library(stargazer)
+library(kableExtra)
+library(fastDummies)
+library(aod)
+
+```
+
+```{r}
+df_combo <- read_excel("BDB_Combo.xlsx")
+df_player <- read_excel("BDB_Player.xlsx")
+```
+
+
+# Player OLS
+
+```{r include=FALSE}
+colnames(df_player) <- c('DATASET', 'DATE', 'PLAYER FULL NAME', 'POSITION', 'OWN TEAM',
+       'OPP TEAM', 'VENUE', 'MIN', 'FG', 'FGA', '3P', '3PA', 'FT', 'FTA', 'OR',
+       'DR', 'TOT', 'A', 'PF', 'ST', 'TO', 'BL', 'PTS', 'PER', 'DATE-DIFF',
+       'RR VAL', 'RR SERIES', 'S_PER', 'I_PER', 'SAME_CITY', 'TRAVEL',
+       '1_days', '10_days', '11_days', '12_days', '13_days',
+       '14+_days', '14_days', '2_days', '3_days', '4_days', '5_days',
+       '6_days', '7_days', '8_days', '9_days', 'Season_Start',
+       'H', 'R', 'H-M1', 'H-M2', 'H-M3', 'R-M1', 'R-M2', 'R-M3', 'M1', 'M2',
+       'M3', 'S_OEFF', 'S_DEFF', 'I_OEFF', 'I_DEFF','Bubble')
+
+```
+
+```{r}
+# Omit - Bubble
+df_player <- df_player %>% filter( DATASET != '2019-2020 Regular Season') %>% mutate(
+  PER_diff = PER - I_PER,
+  M1_sq = M1^2,
+  M1_cu = M1^3,
+  M2_sq = M2^2,
+  M2_cu = M2^3
+)
+  
+```
+
+OLD:
+
+$$PER_{diff} = H + T + OEFF + DEFF + M1+M2+M3+days_1+days_2+days_3+days_4 + \epsilon$$ 
+
+NEW:
+
+
+$$PER_{diff} = H + T + OEFF + DEFF + M + M^2+ M^3+ \epsilon$$ 
+
+
+## OLS - compare lockout
+
+```{r}
+
+base.lm = lm(
+  data = df_player, 
+  PER_diff ~ H+TRAVEL+I_OEFF+I_DEFF+M1 + M1_sq + M1_cu
+  )
+
+without_lockout_lm <- df_player %>% filter( DATASET != '2011-2012 Regular Season') %>% lm(
+    PER_diff ~ H+TRAVEL+I_OEFF+I_DEFF+M1+ M1_sq + M1_cu, data = .
+)
+
+M1.M2 <- lm(
+  data = df_player, 
+  PER_diff ~ H+TRAVEL+I_OEFF+I_DEFF+M1 + M1_sq + M1_cu + M2
+  )
+
+```
+
+```{r mylatextable, warning=FALSE}
+
+stargazer(base.lm, without_lockout_lm, type = 'latex', 
+          title = "Consider the 11-12 NBA Season",
+          notes = "(1) Includes 11-12 NBA Season. (2) Omits 11-12 NBA Season")
+
+```
+
+\newpage
+
+
+print("
+      Wald Tests: Lockout Check
+      ")
+wald.test( 
+  Sigma = vcov(lockout_lm), 
+  b = lockout_lm$coefficients, 
+  Terms = 5:7)
+wald.test( 
+  Sigma = vcov(without_lockout_lm),
+  b = without_lockout_lm$coefficients, 
+  Terms = 5:7)
+
+
+
+# IV 
+
+```{r merge}
+df_combo <- df_combo %>% rename(
+    'OWN TEAM' = 'TEAMS',
+    'TEAM_OEFF' = 'OEFF',
+    'TEAM_DEFF' = 'DEFF',
+    'TEAM_REST_DAYS' = 'REST DAYS',
+    'TDF'= 'DATE-DIFF' 
+)
+
+df_combo <- df_combo %>% select(
+  c('DATASET', 'DATE', 'OWN TEAM', 'VENUE','TEAM_OEFF', 'TEAM_DEFF', 'TEAM_REST_DAYS', 'TDF')
+  )
+
+df_player <- df_player[, -which(
+  names(df_player) %in% c("FG","FGA","FT","3P","3PA","FTA","OR","DR","TOT","A","PF","ST","TO","BL","PTS")
+  )]
+
+df_final <- merge(df_combo, df_player, by = c("DATASET","DATE","OWN TEAM","VENUE"))
+
+df_final <- dummy_cols(df_final, select_columns = "TDF") 
+
+df_final <- df_final %>% rename(
+    'TDF_1' = 'TDF_1.0 days',
+    'TDF_2' = 'TDF_2.0 days',
+    'TDF_3' = 'TDF_3.0 days',
+    'TDF_4' = 'TDF_4.0 days' 
+)
+
+```
+
+\newpage
+
+## Model
+
+```{r}
+IV_model <- ivreg::ivreg(
+  data = df_final, 
+  PER_diff ~ H + TRAVEL + I_OEFF + I_DEFF + `1_days` + `2_days` + `3_days` + `4_days` + (M1 | ( `TDF_1` + `TDF_2` + `TDF_3` + `TDF_4` ) ) + ( M2 | ( `TDF_1` + `TDF_2` + `TDF_3` + `TDF_4` ) ) + ( M3 | ( `TDF_1` + `TDF_2` + `TDF_3` + `TDF_4` ) ))
+
+IV_model.2 <- ivreg::ivreg(
+  data = df_final, 
+  PER_diff ~ H + TRAVEL + I_OEFF + I_DEFF + `1_days` + `2_days` + `3_days` + `4_days` + (M1_sq | ( `TDF_1` + `TDF_2` + `TDF_3` + `TDF_4` ) ) + ( M2_sq | ( `TDF_1` + `TDF_2` + `TDF_3` + `TDF_4` ) ) + ( M3 | ( `TDF_1` + `TDF_2` + `TDF_3` + `TDF_4` ) ))
+
+IV_model.3 <- ivreg::ivreg(
+  data = df_final, 
+  PER_diff ~ H + TRAVEL + I_OEFF + I_DEFF + `1_days` + `2_days` + `3_days` + `4_days` + (M1_cu | ( `TDF_1` + `TDF_2` + `TDF_3` + `TDF_4` ) ) + ( M2 | ( `TDF_1` + `TDF_2` + `TDF_3` + `TDF_4` ) ) + ( M3 | ( `TDF_1` + `TDF_2` + `TDF_3` + `TDF_4` ) ))
+
+```
+
+```{r table5}
+
+summary(IV_model)
+summary(IV_model.2)
+summary(IV_model.3)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
