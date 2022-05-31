@@ -1,0 +1,440 @@
+---
+title: "Work2"
+author: "Sebastian Clavijo"
+date: "5/23/2022"
+output: pdf_document
+---
+
+```{r Import, message=FALSE, warning=FALSE, include=FALSE}
+
+setwd(dirname(rstudioapi::getSourceEditorContext()$path))
+# import libs
+library(tidyverse)
+library(readxl)
+library(stargazer)
+library(kableExtra)
+library(fastDummies)
+library(aod)
+library(car)
+
+fixNumbers <- function(stargazer.object){
+
+  so <- stargazer.object
+  rows <- grep(".*[\\d+],[\\d+].*", so, perl = T)
+  for(row in rows){
+
+    # Get number and format into scientific notation
+    number <- as.numeric(sub(".*([0-9]{1,2}),([0-9]+\\.?[0-9]*).*", "\\1\\2", so[row], perl = T))
+    formatted_num <- sprintf("%.2e", number)
+    so[row] <- sub("(.*)[0-9]{1,2},[0-9]+\\.?[0-9]*(.*)", paste0("\\1", formatted_num, "\\2"), so[row], perl = T)
+  }
+
+  # Print result
+  for(i in 1:length(so)){
+    cat(so[i], "\n")
+  }
+}
+replace_numbers = function(x, cutoff=4, digits=3, scipen=-7) {
+  ifelse(nchar(x) < cutoff, x, prettyNum(as.numeric(x), digits=digits, scientific=scipen))
+}
+```
+
+## Data Prep
+
+```{r}
+df_combo <- read_excel("BDB_Combo.xlsx")
+df_player <- read_excel("BDB_Player_v2.xlsx")
+```
+
+```{r}
+nrow(df_combo)
+nrow(df_player)
+```
+
+```{r}
+what_i_want <- c("DATASET","DATE", "PLAYER FULL NAME", "OWN TEAM","VENUE", "MIN", "PER","AVG_PER","OMIT_PER", "SAME CITY", 
+  "H", "TRAVEL","1.0 days", "M1", "M2", "M3", "OEFF - All games", "DEFF - All games",
+  "OEFF - Not included","DEFF - Not included", "Bubble", "Venue -1", "Dummy at Home Yesterday", "Close game -1","Dummy Close Game", "Avg Min", "Avg Min (excluding -1)","Season Stage")
+
+
+df_player <- df_player %>% select( what_i_want) 
+```
+
+```{r}
+# Filter out Bubble, calculate PER_diff, include polynomial regressions
+df_player <- df_player %>% filter( DATASET != '2019-2020 Regular Season') %>% mutate(
+  PER_diff = PER - OMIT_PER,
+  M1_sq = M1^2,
+  M1_cu = M1^3,
+  M2_sq = M2^2,
+  M2_cu = M2^3,
+  M1.IV.Avg.Min.Sq = `Avg Min`^2
+)
+```
+
+```{r}
+# Merge with for Team Last played
+df_combo <- df_combo %>% rename(
+    'OWN TEAM' = 'TEAMS',
+    'TEAM_OEFF' = 'OEFF',
+    'TEAM_DEFF' = 'DEFF',
+    'TEAM_REST_DAYS' = 'REST DAYS',
+    'TDF'= 'DATE-DIFF'
+)
+
+df_combo <- df_combo %>% select(
+  c('DATASET', 'DATE', 'OWN TEAM', 'VENUE','TEAM_OEFF', 'TEAM_DEFF', 'TEAM_REST_DAYS', 'TDF')
+  )
+
+df_final <- merge(df_combo, df_player, by = c("DATASET","DATE","OWN TEAM","VENUE"))
+
+df_final <- dummy_cols(df_final, select_columns = "TDF") 
+
+
+df_final <- df_final %>% rename(
+    'TDF_1' = 'TDF_1.0 days',
+    'TDF_2' = 'TDF_2.0 days',
+    'OO' = 'OEFF - Not included',
+    'OD' = 'DEFF - Not included'
+) %>% mutate(
+  iv.1 = `TDF_1`*`Avg Min`,
+  iv.2 = `TDF_1`*`Avg Min`^2,
+  iv.3 = `TDF_1`*`Avg Min`^3
+)
+
+nrow(df_final)
+
+```
+
+# OLS 
+
+OLD:
+
+$$PER_{diff} = H + T + OEFF + DEFF + M1+M2+M3+days_1+days_2+days_3+days_4 + \epsilon$$ 
+
+NEW:
+
+$$\triangle PER = \alpha + \beta_HH + \beta_TT + \beta_{OO}OO + \beta_{OD}OD + \beta_{M_1}M_1 + \beta_{M_1^2}M_1^2 + \beta_{M_1^3} M_1^3+ \epsilon$$
+
+$$\triangle PER = \alpha + \beta_HH + \beta_TT + \beta_{OO}OO + \beta_{OD}OD + \beta_{M_1}M_1 + \beta_{M_1^2}M_1^2 + \beta_{M_1^3} M_1^3 + \beta_{M_2}M_2 + \beta_{M_2^2}M_2^2 + \beta_{M_2^3} M_2^3+ \epsilon$$
+
+
+$$\triangle PER = \alpha + \beta_HH + \beta_TT + \beta_{OO}OO + \beta_{OD}OD + \beta_{M_1} \hat M_1 + \beta_{M_1^2} \hat M_1^2 + \beta_{M_1^3} \hat M_1^3+ \epsilon$$
+
+
+
+$$\triangle PER= \alpha + \beta_HH + \beta_TT + \beta_{OO}OO + \beta_{OD}OD + \sum_{n=1}^{4} \beta_{Q_n}Q_n*(\beta_{M_1}M_1 + \beta_{M_1^2}M_1^2 + \beta_{M_1^3} M_1^3)+ \epsilon$$ 
+
+
+$$M_1^n = \delta + \beta_{IV}(Team_{-1}*Avg. Min_i^n) $$
+
+```{r}
+base.lm = lm(
+  data = df_final, 
+  PER_diff ~ H+TRAVEL+OO+OD+M1 + M1_sq + M1_cu
+  )
+
+without_lockout_lm <- df_final %>% filter( DATASET != '2011-2012 Regular Season') %>% lm(
+    PER_diff ~ H+TRAVEL+OO+OD+M1+ M1_sq + M1_cu, data = .
+)
+
+M1.M2 <-  df_final %>% filter( DATASET != '2011-2012 Regular Season') %>% lm(
+  PER_diff ~ H+TRAVEL+OO+OD+M1 + M1_sq + M1_cu + M2, data =.
+  )
+
+M1.M2.complete <-  df_final %>% filter( DATASET != '2011-2012 Regular Season') %>% lm(
+  PER_diff ~ H+TRAVEL+OO+OD+M1 + M1_sq + M1_cu + M2 + M2_sq + M2_cu, data =.
+  )
+```
+
+## Base OLS on Q1 - Q4
+
+```{r}
+
+df_final <- fastDummies::dummy_cols(df_final, select_columns = c("Season Stage"))
+
+df_final <- df_final %>% mutate(combo_m1 = M1 + M1_sq + M1_cu )
+
+df_final %>% filter( DATASET != '2011-2012 Regular Season')%>% group_by(`Season Stage`) %>% summarise(count = n())
+```
+
+## Visuals
+
+```{r}
+# Q.lm$coefficients
+
+# Avg_OEFF
+avg_oeff <- mean(df_final$OO)
+avg_deff <- mean(df_final$OD)
+  
+# mean(df_final$`DEFF - ALL games`)
+
+H <- 1
+Travel <- 1
+
+x <- 0:48
+
+y.base <- base.lm$coefficients[6]*x + base.lm$coefficients[7]*x^2 +  base.lm$coefficients[8]*x^3 
+y.no.lock <- without_lockout_lm$coefficients[6]*x + without_lockout_lm$coefficients[7]*x^2 +  without_lockout_lm$coefficients[8]*x^3 
+
+ggplot() + geom_line( aes( x= x, y = y.base, color="blue")) + geom_line( aes( x= x, y = y.no.lock, color="red")) + 
+  scale_x_continuous(breaks = seq(0,48,4)) +
+  coord_cartesian(xlim=c(0,48)) +
+  scale_y_continuous(breaks = seq(-1,1,.1)) + 
+  xlab("Minutes Played In Yesterday's Game") + 
+  ylab("Change PER (Current - Season Average)") + 
+  ggtitle("Estimated change in PER from previous game minutes - Eq. 2.1") + 
+  theme(
+    plot.title = element_text(size=14, face="bold.italic"),
+    axis.title.x = element_text(size=11, face="bold"),
+    axis.title.y = element_text(size=11, face="bold")
+  )+scale_color_manual(labels = c("All", "Omit 11-12"), values=c("blue","red"))+guides(color=guide_legend(title = "Seasons"))
+
+
+```
+
+
+```{r}
+library(pracma)
+
+R <- matrix(0,1,length(without_lockout_lm$coefficients))
+R[1,6:8] <- 1
+r <- matrix(c(0,1),1,1)
+df_hyp <- 1
+B = without_lockout_lm$coefficients
+V = vcov(without_lockout_lm)
+
+wald.stat <- t(R%*%B-r)%*%inv(R%*%V%*%t(R))%*%(R%*%B-r)
+wald.pvalue <- pchisq(wald.stat,df_hyp,lower.tail = FALSE)
+
+print(wald.stat)
+print(wald.pvalue)
+
+
+wald.test( 
+  Sigma = vcov(without_lockout_lm), 
+  b = without_lockout_lm$coefficients, 
+  Terms = 6:8)
+
+print("
+      Durbin-Watson Test
+      ")
+
+durbinWatsonTest(base.lm)
+
+durbinWatsonTest(without_lockout_lm)
+
+durbinWatsonTest(M1.M2)
+
+```
+
+```{r}
+M1.M2.complete$coefficients[6:11]
+
+wald.test(
+  Sigma = vcov(M1.M2.complete), 
+  b = M1.M2.complete$coefficients, 
+  Terms = 6:11
+)
+
+wald.test(
+  Sigma = vcov(M1.M2.complete), 
+  b = M1.M2.complete$coefficients, 
+  Terms = 6:8
+)
+
+wald.test(
+  Sigma = vcov(M1.M2.complete), 
+  b = M1.M2.complete$coefficients, 
+  Terms = 9:11
+)
+
+durbinWatsonTest(M1.M2.complete)
+
+```
+
+## Wald Test - Season Quarter
+
+```{r}
+
+v1.Q1.test$coefficients
+fuck$coefficients[9:11]
+
+wald.test(
+  Sigma = vcov(fuck), 
+  b = fuck$coefficients, 
+  Terms = 9:11
+)
+
+durbinWatsonTest(fuck)
+
+
+```
+
+\newpage
+
+# IV
+
+```{r}
+
+df_final <- df_final %>% filter( DATASET != '2011-2012 Regular Season') 
+
+base.iv <- AER::ivreg(
+  PER_diff ~ H + TRAVEL +OO+OD + M1 + M1_sq + M1_cu | H + TRAVEL +OO+OD + iv.1 + iv.2 + iv.3, 
+  data = df_final)
+
+summary(base.iv)
+base.iv$coefficients[6:8]
+```
+
+```{r}
+y.iv <- base.iv$coefficients[6]*x + base.iv$coefficients[7]*x^2 +  base.iv$coefficients[8]*x^3 
+
+ggplot() + geom_line( aes( x= x, y = y.iv, color="blue")) + geom_line( aes( x= x, y = y.no.lock, color="red")) + 
+  scale_x_continuous(breaks = seq(0,48,4)) +
+  coord_cartesian(xlim=c(0,48)) +
+  scale_y_continuous(breaks = seq(-1,1,.1)) + 
+  xlab("Minutes Played In Yesterday's Game") + 
+  ylab("Change PER (Current - Season Average)") + 
+  ggtitle("Estimated change in PER from previous game minutes - Eq. 2.1") + 
+  theme(
+    plot.title = element_text(size=14, face="bold.italic"),
+    axis.title.x = element_text(size=11, face="bold"),
+    axis.title.y = element_text(size=11, face="bold")
+  )+scale_color_manual(labels = c("IV", "Base"), values=c("blue","red"))+guides(color=guide_legend(title = "Model"))
+
+
+```
+
+
+## IV - 1st Stage
+
+```{r}
+
+iv.1.lm <- df_final %>% lm(M1 ~ iv.1, data = .)
+iv.2.lm <- df_final %>% lm(M1_sq ~ iv.2, data = .)
+iv.3.lm <- df_final %>% lm(M1_cu ~ iv.3, data = .)
+```
+
+
+\newpage
+
+```{r, results='asis', warning=FALSE}
+
+
+stargazer(base.lm, 
+        type = 'latex',
+        digits = 6,
+        digits.extra = 2)
+
+stargazer(base.lm, without_lockout_lm, 
+        type = 'latex',
+         digits = 6,
+        digits.extra = 2,
+        notes = "(1) Includes 11-12 NBA Season. (2) Omits 11-12 NBA Season")
+
+stargazer(without_lockout_lm, M1.M2.complete,
+        type = 'latex', 
+          digits = 6,
+        digits.extra = 2,
+        notes = "(1) Base Regression (2) All the things")
+
+
+stargazer(iv.1.lm, iv.2.lm, iv.3.lm, 
+        type = 'latex', 
+        title = "IV - 1st Stage ",
+         digits = 6,
+        digits.extra = 2,
+        notes = "(1) M1 on Team Played * Avg Min (2) M1 squared (3) M1 cubed ")
+
+```
+
+```{r}
+
+fuck <- df_final  %>% filter( DATASET != '2011-2012 Regular Season') %>% lm(
+   PER_diff ~ H+TRAVEL+OO+OD+(M1 + M1_sq + M1_cu)*factor(`Season Stage`),
+   data = .
+)
+
+stargazer(fuck, type='latex',
+           title = "OLS on Quarter of the Seasons - 2",
+        digits = 6,
+       digits.extra = 2)
+
+```
+
+
+## Comparing 1 and 2 days back
+
+```{r}
+
+M1.M2.complete$coefficients
+
+M1.M2.complete$coefficients[11]
+
+y.M1.M2.1d <- x*M1.M2.complete$coefficients[6] + x^2*M1.M2.complete$coefficients[7] + x^3*M1.M2.complete$coefficients[8]
+y.M1.M2.2d <- x*M1.M2.complete$coefficients[9] + x^2*M1.M2.complete$coefficients[10] + x^3*M1.M2.complete$coefficients[11] 
+```
+
+```{r}
+ggplot() + 
+  geom_line( aes( x= x, y = y.M1.M2.1d, color="green"), linetype="dotted", size=1.5) + 
+  geom_line( aes( x= x, y = y.M1.M2.2d, color="orange"),  linetype="dotted", size=1.5)  + 
+  geom_line( aes( x= x, y = y.no.lock, color="red"))  + 
+  scale_x_continuous(breaks = seq(0,48,4)) +
+  coord_cartesian(xlim=c(0,48)) +
+  xlab("Minutes Played In earlier Games") + 
+  ylab("Change PER (Current - Season Average)") + 
+  ggtitle("Estimated change in PER - Eq 2.1 vs 2.3") + 
+  theme(
+    plot.title = element_text(size=14, face="bold.italic"),
+    axis.title.x = element_text(size=11, face="bold"),
+    axis.title.y = element_text(size=11, face="bold")
+  )+scale_color_manual(labels = c("Eq. 2.3 - 1 Day", "Eq. 2.3 - 2 Day","Eq. 2.1 - 1 Day"), values=c("green","orange","red"))+guides(color=guide_legend(title = "Games Back"))
+
+
+# plot(x, y.M1.M2.2d)
+
+```
+
+
+## Quarter of the Season
+
+```{r}
+fuck$coefficients[6:20]
+
+fuck$coefficients[12]
+fuck$coefficients[15]
+fuck$coefficients[18]
+
+
+y.Q2.M1<- x*(fuck$coefficients[6]+fuck$coefficients[12]) + x^2*(fuck$coefficients[7]+fuck$coefficients[15]) + x^3*(fuck$coefficients[8]+fuck$coefficients[18])
+y.Q3.M1<- x*(fuck$coefficients[6]+fuck$coefficients[13]) + x^2*(fuck$coefficients[7]+fuck$coefficients[16]) + x^3*(fuck$coefficients[8]+fuck$coefficients[19])
+y.Q4.M1<- x*(fuck$coefficients[6]+fuck$coefficients[14]) + x^2*(fuck$coefficients[7]+fuck$coefficients[17]) + x^3*(fuck$coefficients[8]+fuck$coefficients[20])
+```
+
+```{r}
+
+
+ggplot() + 
+  geom_line( aes( x= x, y = y.no.lock, color="black")) +
+  geom_line( aes( x= x, y = y.Q2.M1, color="green")) + 
+  geom_line( aes( x= x, y = y.Q3.M1, color="yellow")) + 
+  geom_line( aes( x= x, y = y.Q4.M1, color="purple")) + 
+  scale_x_continuous(breaks = seq(0,48,4)) +
+  coord_cartesian(xlim=c(0,48)) +
+  xlab("Minutes Played In previous Game") + 
+  ylab("Change PER (Current - Season Average)") + 
+  ggtitle("Estimated change in PER on time of the season") + 
+  theme(
+    plot.title = element_text(size=14, face="bold.italic"),
+    axis.title.x = element_text(size=11, face="bold"),
+    axis.title.y = element_text(size=11, face="bold")
+  ) + 
+  scale_color_manual(
+    labels = c("Q1", "Q2", "Q3", "Q4"), 
+    values=c("black","green","yellow","purple")
+    ) + guides(color=guide_legend(title = "Quarter"))
+
+
+```

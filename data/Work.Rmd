@@ -6,7 +6,7 @@ output:
     latex_engine: lualatex
 ---
 
-```{r Import, warning=FALSE, message=FALSE}
+```{r Import, message=FALSE, warning=FALSE, include=FALSE}
 
 setwd(dirname(rstudioapi::getSourceEditorContext()$path))
 # import libs
@@ -15,6 +15,7 @@ library(readxl)
 library(stargazer)
 library(kableExtra)
 library(fastDummies)
+library(aod)
 
 ```
 
@@ -26,7 +27,7 @@ df_player <- read_excel("BDB_Player.xlsx")
 
 # Player OLS
 
-```{r}
+```{r include=FALSE}
 colnames(df_player) <- c('DATASET', 'DATE', 'PLAYER FULL NAME', 'POSITION', 'OWN TEAM',
        'OPP TEAM', 'VENUE', 'MIN', 'FG', 'FGA', '3P', '3PA', 'FT', 'FTA', 'OR',
        'DR', 'TOT', 'A', 'PF', 'ST', 'TO', 'BL', 'PTS', 'PER', 'DATE-DIFF',
@@ -51,70 +52,60 @@ df_player <- df_player %>% filter( DATASET != '2019-2020 Regular Season') %>% mu
   
 ```
 
+OLD:
+
+$$PER_{diff} = H + T + OEFF + DEFF + M1+M2+M3+days_1+days_2+days_3+days_4 + \epsilon$$ 
+
+NEW:
+
+
+$$PER_{diff} = H + T + OEFF + DEFF + M + M^2+ M^3+ \epsilon$$ 
+
+
 ## OLS - compare lockout
 
 ```{r}
 
-lockout_lm = lm(
+base.lm = lm(
   data = df_player, 
-  PER_diff ~ H+TRAVEL+I_OEFF+I_DEFF+M1+M2+M3+`1_days`+`2_days`+`3_days`+`4_days`
+  PER_diff ~ H+TRAVEL+I_OEFF+I_DEFF+M1 + M1_sq + M1_cu
   )
 
-without_lockout_lm <- df_player %>% filter(DATASET != '2011-2012 Regular Season') %>% lm( PER_diff ~ H+TRAVEL+I_OEFF+I_DEFF+M1+M2+M3+`1_days`+`2_days`+`3_days`+`4_days`, data = .
+without_lockout_lm <- df_player %>% filter( DATASET != '2011-2012 Regular Season') %>% lm(
+    PER_diff ~ H+TRAVEL+I_OEFF+I_DEFF+M1+ M1_sq + M1_cu, data = .
 )
 
-```
-
-```{r mylatextable, warning=FALSE, results="asis"}
-
-knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
-stargazer(lockout_lm, without_lockout_lm, type = 'latex', title = "Consider the 11-12 NBA Season")
-
-```
-
-## OLS - Weighting Minutes
-
-```{r min_lm}
-
-M1.cu.lm <- lm(
+M1.M2 <- lm(
   data = df_player, 
-  PER_diff ~ H+TRAVEL+I_OEFF+I_DEFF+M1_cu+M2+M3+`1_days`+`2_days`+`3_days`+`4_days`
+  PER_diff ~ H+TRAVEL+I_OEFF+I_DEFF+M1 + M1_sq + M1_cu + M2
   )
 
-M1.sq.lm <- lm(
-  data = df_player, 
-  PER_diff ~ H+TRAVEL+I_OEFF+I_DEFF+M1_sq+M2+M3+`1_days`+`2_days`+`3_days`+`4_days`
-  )
-
-M1.M2.lm <- lm(
-  data = df_player, 
-  PER_diff ~ H+TRAVEL+I_OEFF+I_DEFF+M1_cu+M2_sq+M3+`1_days`+`2_days`+`3_days`+`4_days`
-  )
-
-M1.M2.2.lm <- lm(
-  data = df_player, 
-  PER_diff ~ H+TRAVEL+I_OEFF+I_DEFF+M1_cu+M2_cu+M3+`1_days`+`2_days`+`3_days`+`4_days`
-  )
-
-M1.M2.cv.lm  <-  lm(
-  data = df_player, 
-  PER_diff ~ H+TRAVEL+I_OEFF+I_DEFF+M1*`1_days`+M2*`2_days`+M3*`3_days`+`4_days`
-  )
-  
 ```
 
-```{r table2, warning=FALSE, results="asis"}
-stargazer(M1.cu.lm, M1.sq.lm, type = 'latex', title = "Considering Polynomial OLS")
+```{r mylatextable, warning=FALSE}
+
+stargazer(base.lm, without_lockout_lm, type = 'latex', 
+          title = "Consider the 11-12 NBA Season",
+          notes = "(1) Includes 11-12 NBA Season. (2) Omits 11-12 NBA Season")
+
 ```
 
-```{r table3, warning=FALSE, results="asis"}
-stargazer(M1.M2.lm, M1.M2.2.lm, type = 'latex', title = "Considering Polynomial OLS - p2")
-```
+\newpage
 
 
-```{r table4, warning=FALSE, results="asis"}
-stargazer(M1.M2.cv.lm, type = 'latex', title = "Considering Covariates ( Minutes x Game Played )")
-```
+print("
+      Wald Tests: Lockout Check
+      ")
+wald.test( 
+  Sigma = vcov(lockout_lm), 
+  b = lockout_lm$coefficients, 
+  Terms = 5:7)
+wald.test( 
+  Sigma = vcov(without_lockout_lm),
+  b = without_lockout_lm$coefficients, 
+  Terms = 5:7)
+
+
 
 # IV 
 
@@ -163,7 +154,7 @@ IV_model.2 <- ivreg::ivreg(
 
 IV_model.3 <- ivreg::ivreg(
   data = df_final, 
-  PER_diff ~ H + TRAVEL + I_OEFF + I_DEFF + `1_days` + `2_days` + `3_days` + `4_days` + (M1_sq | ( `TDF_1` + `TDF_2` + `TDF_3` + `TDF_4` ) ) + ( M2 | ( `TDF_1` + `TDF_2` + `TDF_3` + `TDF_4` ) ) + ( M3 | ( `TDF_1` + `TDF_2` + `TDF_3` + `TDF_4` ) ))
+  PER_diff ~ H + TRAVEL + I_OEFF + I_DEFF + `1_days` + `2_days` + `3_days` + `4_days` + (M1_cu | ( `TDF_1` + `TDF_2` + `TDF_3` + `TDF_4` ) ) + ( M2 | ( `TDF_1` + `TDF_2` + `TDF_3` + `TDF_4` ) ) + ( M3 | ( `TDF_1` + `TDF_2` + `TDF_3` + `TDF_4` ) ))
 
 ```
 
